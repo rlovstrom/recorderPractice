@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Recorder Sound Analyzer</title>
+    <title>Recorder Practice Tool</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/vexflow/3.0.9/vexflow-min.js"></script>
     <style>
         body {
@@ -28,6 +28,7 @@
             border: none;
             border-radius: 4px;
             cursor: pointer;
+            margin-right: 10px;
         }
         button:disabled {
             background-color: #cccccc;
@@ -37,10 +38,24 @@
             margin-top: 20px;
             border: 1px solid #ddd;
             border-radius: 4px;
+            min-height: 150px;
+        }
+        #targetStaff {
+            width: 100%;
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            min-height: 150px;
         }
         #frequencyDisplay {
             margin-top: 10px;
             font-size: 18px;
+        }
+        #statusDisplay {
+            margin: 10px 0;
+            font-size: 18px;
+            font-weight: bold;
+            min-height: 24px;
         }
         #waveformCanvas {
             width: 100%;
@@ -54,18 +69,49 @@
             border: 1px solid #ddd;
             margin-top: 20px;
         }
+        .practice-panel {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+        }
+        .staff-container {
+            margin-bottom: 20px;
+        }
+        .staff-label {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
     </style>
 </head>
 <body>
     <div id="container">
-        <h1>Recorder Sound Analyzer</h1>
+        <h1>Recorder Practice Tool</h1>
         <div id="controls">
             <button id="startButton">Start Microphone</button>
-            <div id="frequencyDisplay" style="visibility:collapse;"">Frequency: -- Hz (--)</div>
+            <button id="newNoteButton" disabled>New Note</button>
+            <div id="frequencyDisplay">Frequency: -- Hz (--)</div>
+            <div id="statusDisplay"></div>
         </div>
-        <canvas id="waveformCanvas" ></canvas>
-        <canvas id="spectrumCanvas" ></canvas>
-        <div id="staff"></div>
+        
+        <div class="practice-panel">
+            <h2>Practice Mode</h2>
+            <p>Play the target note shown below. The system will detect when you play the correct note.</p>
+            
+            <div class="staff-container">
+                <div class="staff-label">Target Note:</div>
+                <div id="targetStaff"></div>
+            </div>
+            
+            <div class="staff-container">
+                <div class="staff-label">Your Note:</div>
+                <div id="staff"></div>
+            </div>
+        </div>
+        
+        <canvas id="waveformCanvas"></canvas>
+        <canvas id="spectrumCanvas"></canvas>
     </div>
 
     <script>
@@ -75,6 +121,8 @@
         let microphone;
         let isRecording = false;
         let animationId;
+        let currentTargetNote = null;
+        let correctNotePlayed = false;
         
         // Canvas elements
         const waveformCanvas = document.getElementById('waveformCanvas');
@@ -88,61 +136,62 @@
         spectrumCanvas.width = spectrumCanvas.offsetWidth;
         spectrumCanvas.height = spectrumCanvas.offsetHeight;
         
-        // Staff rendering with VexFlow
+        // Staff elements
         const staffDiv = document.getElementById('staff');
-        const renderer = new Vex.Flow.Renderer(staffDiv, Vex.Flow.Renderer.Backends.SVG);
-        const context = renderer.getContext();
-        const stave = new Vex.Flow.Stave(10, 40, 600);
+        const targetStaffDiv = document.getElementById('targetStaff');
         
-        // Initialize the staff
-        stave.addClef("treble").addTimeSignature("4/4");
-        stave.setContext(context).draw();
+        // UI elements
+        const startButton = document.getElementById('startButton');
+        const newNoteButton = document.getElementById('newNoteButton');
+        const frequencyDisplay = document.getElementById('frequencyDisplay');
+        const statusDisplay = document.getElementById('statusDisplay');
         
-        // Note detection variables - ADJUSTED FOR RECORDER
-        let currentNote = null;
-        const notePositions = {
-            "C5": 50, "D5": 45, "E5": 40, "F5": 35, "G5": 30, 
-            "A5": 25, "Bb5": 22, "B5": 20, "C6": 15, "D6": 10, "E6": 5, "F6": 0
-        };
+        // Available notes for practice (C5 to E6 including Bb5)
+        const practiceNotes = ["C5", "D5", "E5", "F5", "G5", "A5", "Bb5", "B5", "C6", "D6", "E6"];
         
-        // Note frequency ranges - ADJUSTED FOR RECORDER (your C at ~515Hz)
+        // Note frequency ranges - adjusted for recorder
         const noteFrequencies = {
-            "C5": { min: 535, max: 555, freq: 545 },  // Calibrated to your recorder, 539 or 550
-            "D5": { min: 590, max: 610, freq: 600 },    //597 609
-            "E5": { min: 660, max: 680, freq: 670 },    //667 679
+            "C5": { min: 535, max: 555, freq: 545 },
+            "D5": { min: 590, max: 610, freq: 600 },
+            "E5": { min: 660, max: 680, freq: 670 },
             "F5": { min: 720, max: 730, freq: 726 },
             "G5": { min: 780, max: 800, freq: 790 },
-            "A5": { min: 875, max: 905, freq: 890 },    //878 890
-            "Bb5": { min: 935, max: 960, freq: 949 }, // Added Bb5
-            "B5": { min: 990, max: 1010, freq: 1000 },  
+            "A5": { min: 875, max: 905, freq: 890 },
+            "Bb5": { min: 935, max: 960, freq: 949 },
+            "B5": { min: 990, max: 1010, freq: 1000 },
             "C6": { min: 1050, max: 1060, freq: 1054 },
             "D6": { min: 1150, max: 1170, freq: 1160 },
-            "E6": { min: 1320, max: 1340, freq: 1330 }  //1324 1335
+            "E6": { min: 1320, max: 1340, freq: 1330 }
         };
-        /*
-            539 550
-            597 609
-            667 679
-            726
-            785 796
-            878 890
-            949 960
-            996 1007
-            1054
-            1160
-            1324 1335
-        */
         
-        // Start/stop button
-        const startButton = document.getElementById('startButton');
-        const frequencyDisplay = document.getElementById('frequencyDisplay');
+        // Map our detected notes to VexFlow's expected format
+        const vexFlowNoteMap = {
+            "C5": "C/4",
+            "D5": "D/4",
+            "E5": "E/4",
+            "F5": "F/4",
+            "G5": "G/4",
+            "A5": "A/4",
+            "B5": "B/4",
+            "Bb5": "Bb/4",
+            "C6": "C/5",
+            "D6": "D/5",
+            "E6": "E/5"
+        };
         
-        startButton.addEventListener('click', async () => {
+        // Initialize the app
+        function init() {
+            startButton.addEventListener('click', toggleRecording);
+            newNoteButton.addEventListener('click', generateRandomNote);
+        }
+        
+        // Toggle microphone recording
+        async function toggleRecording() {
             if (!isRecording) {
                 try {
                     audioContext = new (window.AudioContext || window.webkitAudioContext)();
                     analyser = audioContext.createAnalyser();
-                    analyser.fftSize = 4096; // Increased for better frequency resolution
+                    analyser.fftSize = 4096;
                     
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     microphone = audioContext.createMediaStreamSource(stream);
@@ -150,37 +199,88 @@
                     
                     isRecording = true;
                     startButton.textContent = "Stop Microphone";
+                    newNoteButton.disabled = false;
+                    generateRandomNote();
                     startVisualization();
+                    
+                    statusDisplay.textContent = "Microphone active - play the target note!";
+                    statusDisplay.style.color = "#4CAF50";
                 } catch (error) {
                     console.error("Error accessing microphone:", error);
-                    alert("Could not access microphone. Please ensure you've granted permission.");
+                    statusDisplay.textContent = "Error accessing microphone. Please check permissions.";
+                    statusDisplay.style.color = "red";
                 }
             } else {
-                cancelAnimationFrame(animationId);
-                if (microphone) {
-                    microphone.disconnect();
-                }
-                if (audioContext) {
-                    audioContext.close();
-                }
-                isRecording = false;
-                startButton.textContent = "Start Microphone";
-                frequencyDisplay.textContent = "Frequency: -- Hz (--)";
-                
-                // Clear canvases
-                waveformCtx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
-                spectrumCtx.clearRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
-                
-                // Clear the staff
-                staffDiv.innerHTML = '';
-                const renderer = new Vex.Flow.Renderer(staffDiv, Vex.Flow.Renderer.Backends.SVG);
-                const context = renderer.getContext();
-                const stave = new Vex.Flow.Stave(10, 40, 600);
-                stave.addClef("treble").addTimeSignature("4/4");
-                stave.setContext(context).draw();
+                stopRecording();
             }
-        });
+        }
         
+        function stopRecording() {
+            cancelAnimationFrame(animationId);
+            if (microphone) microphone.disconnect();
+            if (audioContext) audioContext.close();
+            
+            isRecording = false;
+            startButton.textContent = "Start Microphone";
+            newNoteButton.disabled = true;
+            frequencyDisplay.textContent = "Frequency: -- Hz (--)";
+            statusDisplay.textContent = "";
+            
+            // Clear canvases
+            waveformCtx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+            spectrumCtx.clearRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
+            
+            // Clear staffs
+            staffDiv.innerHTML = '';
+            targetStaffDiv.innerHTML = '';
+        }
+        
+        // Generate a new random target note
+        function generateRandomNote() {
+            correctNotePlayed = false;
+            
+            // Pick a random note from our practice range
+            currentTargetNote = practiceNotes[Math.floor(Math.random() * practiceNotes.length)];
+            
+            // Display the target note
+            renderTargetNote();
+            
+            statusDisplay.textContent = "Play the target note!";
+            statusDisplay.style.color = "#333";
+        }
+        
+        // Render the target note on the staff
+        function renderTargetNote() {
+            targetStaffDiv.innerHTML = '';
+            
+            const renderer = new Vex.Flow.Renderer(targetStaffDiv, Vex.Flow.Renderer.Backends.SVG);
+            const context = renderer.getContext();
+            const stave = new Vex.Flow.Stave(10, 40, 600);
+            
+            stave.addClef("treble").addTimeSignature("4/4");
+            stave.setContext(context).draw();
+            
+            // Create the target note
+            const staveNote = new Vex.Flow.StaveNote({
+                clef: "treble",
+                keys: [vexFlowNoteMap[currentTargetNote]],
+                duration: "q"
+            });
+            
+            // Add accidental if needed
+            if (currentTargetNote.includes("Bb")) {
+                staveNote.addAccidental(0, new Vex.Flow.Accidental("b"));
+            }
+            
+            // Add to voice and format
+            const voice = new Vex.Flow.Voice({ num_beats: 1, beat_value: 4 });
+            voice.addTickables([staveNote]);
+            
+            new Vex.Flow.Formatter().joinVoices([voice]).format([voice], 200);
+            voice.draw(context, stave);
+        }
+        
+        // Start audio visualization and note detection
         function startVisualization() {
             const bufferLength = analyser.frequencyBinCount;
             const dataArray = new Uint8Array(bufferLength);
@@ -193,50 +293,90 @@
                 analyser.getByteFrequencyData(dataArray);
                 analyser.getByteTimeDomainData(timeDomainData);
                 
-                // Find the dominant frequency with better precision
+                // Find the dominant frequency
                 const dominantFrequency = findDominantFrequency(dataArray, audioContext.sampleRate);
                 
                 // Display frequency and note
                 if (dominantFrequency > 0) {
                     const note = frequencyToNote(dominantFrequency);
                     frequencyDisplay.textContent = `Frequency: ${dominantFrequency.toFixed(0)} Hz (${note})`;
+                    
+                    // Update the played note display
                     updateStaff(note);
+                    
+                    // Check if correct note was played
+                    if (currentTargetNote && note === currentTargetNote && !correctNotePlayed) {
+                        correctNotePlayed = true;
+                        statusDisplay.textContent = "Correct! Well done!";
+                        statusDisplay.style.color = "#4CAF50";
+                        
+                        // Automatically generate new note after delay
+                        setTimeout(generateRandomNote, 150);
+                    }
                 }
                 
-                // Draw waveform
+                // Draw visualizations
                 drawWaveform(timeDomainData);
-                
-                // Draw spectrum
                 drawSpectrum(dataArray);
             }
             
             draw();
         }
         
+        // Update the played note display
+        function updateStaff(note) {
+            if (note === "--") return;
+            
+            staffDiv.innerHTML = '';
+            
+            const renderer = new Vex.Flow.Renderer(staffDiv, Vex.Flow.Renderer.Backends.SVG);
+            const context = renderer.getContext();
+            const stave = new Vex.Flow.Stave(10, 40, 600);
+            
+            stave.addClef("treble").addTimeSignature("4/4");
+            stave.setContext(context).draw();
+            
+            // Create the played note
+            const staveNote = new Vex.Flow.StaveNote({
+                clef: "treble",
+                keys: [vexFlowNoteMap[note]],
+                duration: "q"
+            });
+            
+            // Add accidental if needed
+            if (note.includes("Bb")) {
+                staveNote.addAccidental(0, new Vex.Flow.Accidental("b"));
+            }
+            
+            // Add to voice and format
+            const voice = new Vex.Flow.Voice({ num_beats: 1, beat_value: 4 });
+            voice.addTickables([staveNote]);
+            
+            new Vex.Flow.Formatter().joinVoices([voice]).format([voice], 200);
+            voice.draw(context, stave);
+        }
+        
+        // Helper functions
         function findDominantFrequency(dataArray, sampleRate) {
-            // Improved peak detection with smoothing
             const SMOOTHING = 0.8;
             let maxIndex = 0;
             let maxValue = 0;
             let lastMax = 0;
             
             for (let i = 0; i < dataArray.length; i++) {
-                // Apply simple smoothing
                 const value = dataArray[i] * (1 - SMOOTHING) + lastMax * SMOOTHING;
                 lastMax = value;
                 
-                if (value > maxValue && i > 0) { // Skip first bin (DC offset)
+                if (value > maxValue && i > 0) {
                     maxValue = value;
                     maxIndex = i;
                 }
             }
             
-            // Calculate the frequency with interpolation for better accuracy
             return maxIndex * sampleRate / analyser.fftSize;
         }
         
         function frequencyToNote(frequency) {
-            // Find the closest note with wider tolerance for recorder
             let closestNote = null;
             let smallestDiff = Infinity;
             
@@ -248,57 +388,7 @@
                 }
             }
             
-            // Wider tolerance for recorder (25Hz instead of 20Hz)
             return smallestDiff < 25 ? closestNote : "--";
-        }
-
-        // Map our detected notes to VexFlow format
-            const vexFlowNoteMap = {
-                "C5": "C/4",  // VexFlow uses different octave numbering
-                "D5": "D/4",
-                "E5": "E/4",
-                "F5": "F/4",
-                "G5": "G/4",
-                "A5": "A/4",
-                "B5": "B/4",
-                "Bb5": "BB/4", // Added Bb
-                "C6": "C/5",
-                "D6": "D/5",
-                "E6": "E/5",
-                "F6": "F/5"
-            };
-        
-        function updateStaff(note) {
-            if (note === "--" || note === currentNote) return;
-            
-            currentNote = note;
-            staffDiv.innerHTML = '';
-            
-            const renderer = new Vex.Flow.Renderer(staffDiv, Vex.Flow.Renderer.Backends.SVG);
-            const context = renderer.getContext();
-            const stave = new Vex.Flow.Stave(10, 40, 600);
-            
-            stave.addClef("treble").addTimeSignature("4/4");
-            stave.setContext(context).draw();
-            
-            // Add the note
-            const staveNote = new Vex.Flow.StaveNote({
-                clef: "treble",
-                keys: [vexFlowNoteMap[note] + "/4"],
-                duration: "q"
-            });
-
-            // If the note is a Bb, ensure the flat is displayed
-            if (note.includes("Bb")) {
-                staveNote.addAccidental(0, new Vex.Flow.Accidental("b"));
-            }
-
-            // Add to voice and format
-            const voice = new Vex.Flow.Voice({ num_beats: 1, beat_value: 4 });
-            voice.addTickables([staveNote]);
-            
-            new Vex.Flow.Formatter().joinVoices([voice]).format([voice], 200);
-            voice.draw(context, stave);
         }
         
         function drawWaveform(dataArray) {
@@ -339,7 +429,6 @@
             for (let i = 0; i < analyser.frequencyBinCount; i++) {
                 const barHeight = dataArray[i] / 2;
                 
-                // Color based on whether this is a detected note frequency
                 let isNoteFrequency = false;
                 for (const [note, range] of Object.entries(noteFrequencies)) {
                     const freq = i * audioContext.sampleRate / analyser.fftSize;
@@ -366,6 +455,9 @@
             spectrumCanvas.width = spectrumCanvas.offsetWidth;
             spectrumCanvas.height = spectrumCanvas.offsetHeight;
         });
+        
+        // Initialize the app
+        init();
     </script>
 </body>
 </html>
