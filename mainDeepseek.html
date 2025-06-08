@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recorder Sound Analyzer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vexflow/3.0.9/vexflow-min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        #container {
+            display: flex;
+            flex-direction: column;
+            align-items: left;
+        }
+        #controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 15px;
+            font-size: 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #cccccc;
+        }
+        #staff {
+            width: 100%;
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        #frequencyDisplay {
+            margin-top: 10px;
+            font-size: 18px;
+        }
+        #waveformCanvas {
+            width: 100%;
+            height: 150px;
+            border: 1px solid #ddd;
+            margin-top: 20px;
+        }
+        #spectrumCanvas {
+            width: 100%;
+            height: 200px;
+            border: 1px solid #ddd;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <h1>Recorder Sound Analyzer</h1>
+        <div id="controls">
+            <button id="startButton">Start Microphone</button>
+            <div id="frequencyDisplay" style="visibility:collapse;"">Frequency: -- Hz (--)</div>
+        </div>
+        <canvas id="waveformCanvas" ></canvas>
+        <canvas id="spectrumCanvas" ></canvas>
+        <div id="staff"></div>
+    </div>
+
+    <script>
+        // Audio context and variables
+        let audioContext;
+        let analyser;
+        let microphone;
+        let isRecording = false;
+        let animationId;
+        
+        // Canvas elements
+        const waveformCanvas = document.getElementById('waveformCanvas');
+        const waveformCtx = waveformCanvas.getContext('2d');
+        const spectrumCanvas = document.getElementById('spectrumCanvas');
+        const spectrumCtx = spectrumCanvas.getContext('2d');
+        
+        // Set canvas dimensions
+        waveformCanvas.width = waveformCanvas.offsetWidth;
+        waveformCanvas.height = waveformCanvas.offsetHeight;
+        spectrumCanvas.width = spectrumCanvas.offsetWidth;
+        spectrumCanvas.height = spectrumCanvas.offsetHeight;
+        
+        // Staff rendering with VexFlow
+        const staffDiv = document.getElementById('staff');
+        const renderer = new Vex.Flow.Renderer(staffDiv, Vex.Flow.Renderer.Backends.SVG);
+        const context = renderer.getContext();
+        const stave = new Vex.Flow.Stave(10, 40, 600);
+        
+        // Initialize the staff
+        stave.addClef("treble").addTimeSignature("4/4");
+        stave.setContext(context).draw();
+        
+        // Note detection variables - ADJUSTED FOR RECORDER
+        let currentNote = null;
+        const notePositions = {
+            "C5": 50, "D5": 45, "E5": 40, "F5": 35, "G5": 30, 
+            "A5": 25, "Bb5": 22, "B5": 20, "C6": 15, "D6": 10, "E6": 5, "F6": 0
+        };
+        
+        // Note frequency ranges - ADJUSTED FOR RECORDER (your C at ~515Hz)
+        const noteFrequencies = {
+            "C5": { min: 535, max: 555, freq: 545 },  // Calibrated to your recorder, 539 or 550
+            "D5": { min: 590, max: 610, freq: 600 },    //597 609
+            "E5": { min: 660, max: 680, freq: 670 },    //667 679
+            "F5": { min: 720, max: 730, freq: 726 },
+            "G5": { min: 780, max: 800, freq: 790 },
+            "A5": { min: 875, max: 905, freq: 890 },    //878 890
+            "Bb5": { min: 935, max: 960, freq: 949 }, // Added Bb5
+            "B5": { min: 990, max: 1010, freq: 1000 },  
+            "C6": { min: 1050, max: 1060, freq: 1054 },
+            "D6": { min: 1150, max: 1170, freq: 1160 },
+            "E6": { min: 1320, max: 1340, freq: 1330 }  //1324 1335
+        };
+        /*
+            539 550
+            597 609
+            667 679
+            726
+            785 796
+            878 890
+            949 960
+            996 1007
+            1054
+            1160
+            1324 1335
+        */
+        
+        // Start/stop button
+        const startButton = document.getElementById('startButton');
+        const frequencyDisplay = document.getElementById('frequencyDisplay');
+        
+        startButton.addEventListener('click', async () => {
+            if (!isRecording) {
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    analyser = audioContext.createAnalyser();
+                    analyser.fftSize = 4096; // Increased for better frequency resolution
+                    
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    microphone = audioContext.createMediaStreamSource(stream);
+                    microphone.connect(analyser);
+                    
+                    isRecording = true;
+                    startButton.textContent = "Stop Microphone";
+                    startVisualization();
+                } catch (error) {
+                    console.error("Error accessing microphone:", error);
+                    alert("Could not access microphone. Please ensure you've granted permission.");
+                }
+            } else {
+                cancelAnimationFrame(animationId);
+                if (microphone) {
+                    microphone.disconnect();
+                }
+                if (audioContext) {
+                    audioContext.close();
+                }
+                isRecording = false;
+                startButton.textContent = "Start Microphone";
+                frequencyDisplay.textContent = "Frequency: -- Hz (--)";
+                
+                // Clear canvases
+                waveformCtx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+                spectrumCtx.clearRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
+                
+                // Clear the staff
+                staffDiv.innerHTML = '';
+                const renderer = new Vex.Flow.Renderer(staffDiv, Vex.Flow.Renderer.Backends.SVG);
+                const context = renderer.getContext();
+                const stave = new Vex.Flow.Stave(10, 40, 600);
+                stave.addClef("treble").addTimeSignature("4/4");
+                stave.setContext(context).draw();
+            }
+        });
+        
+        function startVisualization() {
+            const bufferLength = analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+            const timeDomainData = new Uint8Array(analyser.fftSize);
+            
+            function draw() {
+                animationId = requestAnimationFrame(draw);
+                
+                // Get frequency and time domain data
+                analyser.getByteFrequencyData(dataArray);
+                analyser.getByteTimeDomainData(timeDomainData);
+                
+                // Find the dominant frequency with better precision
+                const dominantFrequency = findDominantFrequency(dataArray, audioContext.sampleRate);
+                
+                // Display frequency and note
+                if (dominantFrequency > 0) {
+                    const note = frequencyToNote(dominantFrequency);
+                    frequencyDisplay.textContent = `Frequency: ${dominantFrequency.toFixed(0)} Hz (${note})`;
+                    updateStaff(note);
+                }
+                
+                // Draw waveform
+                drawWaveform(timeDomainData);
+                
+                // Draw spectrum
+                drawSpectrum(dataArray);
+            }
+            
+            draw();
+        }
+        
+        function findDominantFrequency(dataArray, sampleRate) {
+            // Improved peak detection with smoothing
+            const SMOOTHING = 0.8;
+            let maxIndex = 0;
+            let maxValue = 0;
+            let lastMax = 0;
+            
+            for (let i = 0; i < dataArray.length; i++) {
+                // Apply simple smoothing
+                const value = dataArray[i] * (1 - SMOOTHING) + lastMax * SMOOTHING;
+                lastMax = value;
+                
+                if (value > maxValue && i > 0) { // Skip first bin (DC offset)
+                    maxValue = value;
+                    maxIndex = i;
+                }
+            }
+            
+            // Calculate the frequency with interpolation for better accuracy
+            return maxIndex * sampleRate / analyser.fftSize;
+        }
+        
+        function frequencyToNote(frequency) {
+            // Find the closest note with wider tolerance for recorder
+            let closestNote = null;
+            let smallestDiff = Infinity;
+            
+            for (const [note, range] of Object.entries(noteFrequencies)) {
+                const diff = Math.abs(frequency - range.freq);
+                if (diff < smallestDiff) {
+                    smallestDiff = diff;
+                    closestNote = note;
+                }
+            }
+            
+            // Wider tolerance for recorder (25Hz instead of 20Hz)
+            return smallestDiff < 25 ? closestNote : "--";
+        }
+
+        // Map our detected notes to VexFlow format
+            const vexFlowNoteMap = {
+                "C5": "C/4",  // VexFlow uses different octave numbering
+                "D5": "D/4",
+                "E5": "E/4",
+                "F5": "F/4",
+                "G5": "G/4",
+                "A5": "A/4",
+                "B5": "B/4",
+                "Bb5": "BB/4", // Added Bb
+                "C6": "C/5",
+                "D6": "D/5",
+                "E6": "E/5",
+                "F6": "F/5"
+            };
+        
+        function updateStaff(note) {
+            if (note === "--" || note === currentNote) return;
+            
+            currentNote = note;
+            staffDiv.innerHTML = '';
+            
+            const renderer = new Vex.Flow.Renderer(staffDiv, Vex.Flow.Renderer.Backends.SVG);
+            const context = renderer.getContext();
+            const stave = new Vex.Flow.Stave(10, 40, 600);
+            
+            stave.addClef("treble").addTimeSignature("4/4");
+            stave.setContext(context).draw();
+            
+            // Add the note
+            const staveNote = new Vex.Flow.StaveNote({
+                clef: "treble",
+                keys: [vexFlowNoteMap[note] + "/4"],
+                duration: "q"
+            });
+
+            // If the note is a Bb, ensure the flat is displayed
+            if (note.includes("Bb")) {
+                staveNote.addAccidental(0, new Vex.Flow.Accidental("b"));
+            }
+
+            // Add to voice and format
+            const voice = new Vex.Flow.Voice({ num_beats: 1, beat_value: 4 });
+            voice.addTickables([staveNote]);
+            
+            new Vex.Flow.Formatter().joinVoices([voice]).format([voice], 200);
+            voice.draw(context, stave);
+        }
+        
+        function drawWaveform(dataArray) {
+            waveformCtx.fillStyle = 'rgb(200, 200, 200)';
+            waveformCtx.fillRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+            
+            waveformCtx.lineWidth = 2;
+            waveformCtx.strokeStyle = 'rgb(0, 0, 0)';
+            waveformCtx.beginPath();
+            
+            const sliceWidth = waveformCanvas.width / analyser.fftSize;
+            let x = 0;
+            
+            for (let i = 0; i < analyser.fftSize; i++) {
+                const v = dataArray[i] / 128.0;
+                const y = v * waveformCanvas.height / 2;
+                
+                if (i === 0) {
+                    waveformCtx.moveTo(x, y);
+                } else {
+                    waveformCtx.lineTo(x, y);
+                }
+                
+                x += sliceWidth;
+            }
+            
+            waveformCtx.lineTo(waveformCanvas.width, waveformCanvas.height / 2);
+            waveformCtx.stroke();
+        }
+        
+        function drawSpectrum(dataArray) {
+            spectrumCtx.fillStyle = 'rgb(200, 200, 200)';
+            spectrumCtx.fillRect(0, 0, spectrumCanvas.width, spectrumCanvas.height);
+            
+            const barWidth = (spectrumCanvas.width / analyser.frequencyBinCount) * 2.5;
+            let x = 0;
+            
+            for (let i = 0; i < analyser.frequencyBinCount; i++) {
+                const barHeight = dataArray[i] / 2;
+                
+                // Color based on whether this is a detected note frequency
+                let isNoteFrequency = false;
+                for (const [note, range] of Object.entries(noteFrequencies)) {
+                    const freq = i * audioContext.sampleRate / analyser.fftSize;
+                    if (freq >= range.min && freq <= range.max) {
+                        isNoteFrequency = true;
+                        break;
+                    }
+                }
+                
+                spectrumCtx.fillStyle = isNoteFrequency 
+                    ? `rgb(200, 50, 50)` 
+                    : `rgb(50, 50, ${barHeight + 100})`;
+                
+                spectrumCtx.fillRect(x, spectrumCanvas.height - barHeight, barWidth, barHeight);
+                
+                x += barWidth + 1;
+            }
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            waveformCanvas.width = waveformCanvas.offsetWidth;
+            waveformCanvas.height = waveformCanvas.offsetHeight;
+            spectrumCanvas.width = spectrumCanvas.offsetWidth;
+            spectrumCanvas.height = spectrumCanvas.offsetHeight;
+        });
+    </script>
+</body>
+</html>
